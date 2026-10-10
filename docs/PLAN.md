@@ -17,6 +17,7 @@ Each design choice below rests on a test run against Playwright 1.63 (Python) an
 | E5 | Open the same profile folder twice at once | Chromium refuses: "Failed to create a ProcessSingleton" | One profile = one browser process. Leasing is enforced by Chromium itself; the runtime must own that one process. |
 | E6 | Fill a password field, then snapshot | **The password appears in plain text** (`textbox "Pass": hunter2`) | Filling from the vault is not enough. Snapshots must be scrubbed. See 4.5. |
 | E7 | Hidden (headless) browser: CDP `Page.startScreencast`, then send clicks and text with `Input.dispatchMouseEvent` / `Input.insertText` | Real JPEG frames stream out (about 4 KB each); the human's typing and click landed on the page | A live view works without a visible window, so local and hosted run the same way. See 4.8. |
+| E8 | Read `mcp` 2.3.0 source (`mcp/server/apps.py`, `mcp/server/elicitation.py`) | SDK supports MCP Apps: a tool can show an HTML form inside the chat, and tools can be marked `visibility=["app"]` so only that form can call them, not the model. SDK docs say form-mode elicitation must not be used for passwords. | Vault form lives in the chat as an MCP App. See 4.5. |
 
 ## 2. Stack
 
@@ -91,7 +92,9 @@ The connected agent runs perceive (`snapshot`, `screenshot` when needed), reason
 Where you keep logins (email, username, password) so the agent can use them without ever seeing them.
 
 - **Entry:** a name (`github`), a site (`github.com`), and fields. Usual fields are `email`, `username`, `password`; you can add others (like a PIN). All fields are treated the same: encrypted, fill-only.
-- **Vault page:** in the same web app as the live view (`/vault`). Add, edit, delete entries. Values are write-only: you can replace them, never read them back.
+- **Vault form in the chat (E8):** an MCP App. You ask the agent "open my vault" (or it asks you when it needs a login it doesn't have) and it calls the `vault` tool, which shows a form inside the chat. Add, edit, delete entries there. Values are write-only: you can replace them, never read them back.
+- **The value never goes through the model:** the form saves by calling `vault_save`, a tool marked `visibility=["app"]`. The model can't see or call it. The model only sees the `vault` tool's text result: entry names and field names.
+- **Must be proven in phase 2 with real Claude:** that the arguments of an app-only tool call do not show up in the model's context. Not verified yet; only the SDK and spec docs say so. If it leaks, the form will post straight to the runtime instead, and this section gets rewritten.
 - Same actions over REST for scripts. There is no endpoint that returns a value.
 - **Agent use:** `list_vault` tells the agent what exists (`github: email, password`). `fill(ref, secret="github.password")` decrypts inside the tool layer and types it.
 - **Site lock:** `fill` from an entry only works when the current page is on that entry's site (or its subdomains). Otherwise it errors. Stops a fake login page from getting your password.
@@ -127,7 +130,7 @@ A web page served by the runtime that shows the browser as it moves and lets you
 - `POST /tasks/{id}/actions/{tool}`: the tools in 4.3, for agents that speak HTTP instead of MCP
 - `POST /tasks/{id}/approve` and `/reject` (human only)
 - `POST /profiles`, `GET /profiles`
-- `GET /vault` (names, sites, field names), `PUT /vault/{name}`, `DELETE /vault/{name}`, plus the `/vault` page
+- `GET /vault` (names, sites, field names), `PUT /vault/{name}`, `DELETE /vault/{name}`, for scripts
 - `GET /live/{task_id}` page and `WS /live/{task_id}/stream`
 - Auth: API key in header. Each key has a name, used as agent id in the audit log.
 
@@ -141,7 +144,7 @@ A web page served by the runtime that shows the browser as it moves and lets you
 Each phase ends with something runnable and tested.
 
 1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the tools in 4.3, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
-2. **Vault + scrubbing + audit.** Vault page and REST. Test: add an email and password on the vault page, agent logs in to a test site with them, assert neither value appears in snapshot, audit row, screenshot or any agent response. Test: `fill` on a page from a different site errors.
+2. **Vault + scrubbing + audit.** Vault form in the chat and REST. Test: in Claude, save an email and password in the chat form, then ask Claude what the password is and check the conversation export: it must not be there. Test: agent logs in to a test site with them, assert neither value appears in snapshot, audit row, screenshot or any agent response. Test: `fill` on a page from a different site errors.
 3. **Live view.** Stream, input, take control and hand back. Test: open `live_url`, log in to a test site by hand, hand back, agent continues logged in.
 4. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
 5. **Approval gate.** Test: a "Place order" click stops at `waiting_approval` and runs only after approve.
