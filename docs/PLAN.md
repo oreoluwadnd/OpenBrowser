@@ -18,6 +18,7 @@ Each design choice below rests on a test run against Playwright 1.63 (Python) an
 | E6 | Fill a password field, then snapshot | **The password appears in plain text** (`textbox "Pass": hunter2`) | Filling from the vault is not enough. Snapshots must be scrubbed. See 4.5. |
 | E7 | Hidden (headless) browser: CDP `Page.startScreencast`, then send clicks and text with `Input.dispatchMouseEvent` / `Input.insertText` | Real JPEG frames stream out (about 4 KB each); the human's typing and click landed on the page | A live view works without a visible window, so local and hosted run the same way. See 4.8. |
 | E8 | Read `mcp` 2.3.0 source (`mcp/server/apps.py`, `mcp/server/elicitation.py`) | SDK supports MCP Apps: a tool can show an HTML form inside the chat, and tools can be marked `visibility=["app"]` so only that form can call them, not the model. SDK docs say form-mode elicitation must not be used for passwords. A form can declare `csp.connect_domains` to open connections to the runtime. | Vault form and live view live in the chat as MCP Apps. See 4.5, 4.8. |
+| E9 | Real Claude CLI connected to `openbrowser serve` over MCP, asked to log in to the test site | Logged in and closed its task in 8 steps. First run: every result reached Claude as one escaped JSON string (`{"result": "URL: ...\n..."}`), because the SDK adds structured output to tools returning `str`. Fixed with `structured_output=False`; second run got plain multi-line text. | Phase 1 goal met. Tools return plain text. |
 
 ## 2. Stack
 
@@ -33,7 +34,7 @@ Each design choice below rests on a test run against Playwright 1.63 (Python) an
 One process, one machine (local-first). Multi-tenant comes later (phase 5).
 
 ```
-             REST (FastAPI)            MCP (stdio + streamable HTTP)
+             REST (FastAPI)            MCP (streamable HTTP at /mcp)
    spawn_task/steer_task/...        snapshot/navigate/click/fill/...
                  \                        /
                   \                      /
@@ -45,6 +46,8 @@ One process, one machine (local-first). Multi-tenant comes later (phase 5).
                    |
            Vault  |  Audit log  |  Approval gate
 ```
+
+One long-running process (`openbrowser serve`). MCP is HTTP only, no stdio: with stdio every Claude window would start its own runtime, and two runtimes cannot open the same profile (E5).
 
 No model inside the runtime. The brain is whatever agent connects (Claude, an OpenAI agent, a script). It reads snapshots and calls tools; the runtime only runs the browser.
 
@@ -66,7 +69,7 @@ A task is an agent's turn on a profile, with a goal written down for the audit l
 - `spawn_task(profile, goal)` puts the task in that profile's FIFO queue (SQLite) and returns its id and state.
 - The head of the queue is `running` and holds the profile. Tool calls must pass the task id. A call on a task that is not `running` returns an error with its queue position.
 - `steer_task(id, message)`: a human adds a note. It is returned with the agent's next tool result.
-- `close_task(id)` ends it and hands the profile to the next task. An MCP disconnect closes the session's open tasks.
+- `close_task(id)` ends it and hands the profile to the next task. A running task with no tool call for 10 minutes is closed, so a crashed or forgotten agent cannot hold a profile forever. Restarting the runtime closes all open tasks.
 - States: `queued -> running -> (waiting_approval | human_control -> running)* -> closed`.
 
 ### 4.3 Tool layer (shared by MCP and REST)
@@ -146,7 +149,7 @@ Shows the browser as it moves, inside the chat, and lets you use it.
 
 Each phase ends with something runnable and tested.
 
-1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the tools in 4.3, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
+1. **Profiles + tasks + tool layer + MCP.** (Done, see E9.) Persistent profiles with session-cookie restore, per-profile FIFO tasks, the tools in 4.3, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
 2. **Vault + scrubbing + audit.** Vault form in the chat and REST. Test: in Claude, save an email and password in the chat form, then ask Claude what the password is and check the conversation export: it must not be there. Test: agent logs in to a test site with them, assert neither value appears in snapshot, audit row, screenshot or any agent response. Test: `fill` on a page from a different site errors.
 3. **Live view.** Stream, input, take control and hand back, in the chat and at `live_url`. First test: from Claude, can the in-chat page connect to a runtime on `localhost`? The result decides how local users connect. Test: in the chat, log in to a test site by hand, hand back, agent continues logged in.
 4. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
