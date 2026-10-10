@@ -76,8 +76,9 @@ A task is an agent's turn on a profile, with a goal written down for the audit l
 | `screenshot` | none | PNG, vault-filled fields masked with Playwright's `mask=` |
 | `navigate` | url | new snapshot |
 | `click` | ref | new snapshot |
-| `fill` | ref, text OR secret name | new snapshot |
+| `fill` | ref, text OR vault field (`github.password`) | new snapshot |
 | `press` | key | new snapshot |
+| `list_vault` | none | entry names, sites and field names. Never values. |
 
 Every action returns the next snapshot, so verify is built in. Each call writes one audit row before returning.
 
@@ -87,10 +88,15 @@ The connected agent runs perceive (`snapshot`, `screenshot` when needed), reason
 
 ### 4.5 Vault (fill-only)
 
-- Secrets stored encrypted in SQLite, keyed by name and scoped to a profile.
-- API can create, list names, delete. There is no read endpoint for values.
-- `fill(ref, secret="github_password")` decrypts inside the tool layer and types it.
-- **Scrubbing (E6):** the tool layer keeps the set of secret values filled in this profile's open pages. Every snapshot and audit row has those values replaced with `[secret:github_password]` before leaving the tool layer. Screenshots mask the filled elements.
+Where you keep logins (email, username, password) so the agent can use them without ever seeing them.
+
+- **Entry:** a name (`github`), a site (`github.com`), and fields. Usual fields are `email`, `username`, `password`; you can add others (like a PIN). All fields are treated the same: encrypted, fill-only.
+- **Vault page:** in the same web app as the live view (`/vault`). Add, edit, delete entries. Values are write-only: you can replace them, never read them back.
+- Same actions over REST for scripts. There is no endpoint that returns a value.
+- **Agent use:** `list_vault` tells the agent what exists (`github: email, password`). `fill(ref, secret="github.password")` decrypts inside the tool layer and types it.
+- **Site lock:** `fill` from an entry only works when the current page is on that entry's site (or its subdomains). Otherwise it errors. Stops a fake login page from getting your password.
+- **Scrubbing (E6):** the tool layer keeps the set of vault values filled in this profile's open pages. Every snapshot and audit row has those values replaced with `[secret:github.password]` before leaving the tool layer. Screenshots mask the filled elements.
+- Vault belongs to the user, not to one profile, so all your profiles can use the same logins.
 
 ### 4.6 Approval gate
 
@@ -120,7 +126,8 @@ A web page served by the runtime that shows the browser as it moves and lets you
 - `POST /tasks` (`spawn_task`), `POST /tasks/{id}/steer` (`steer_task`), `GET /tasks` (`list_tasks`), `POST /tasks/{id}/close` (`close_task`)
 - `POST /tasks/{id}/actions/{tool}`: the tools in 4.3, for agents that speak HTTP instead of MCP
 - `POST /tasks/{id}/approve` and `/reject` (human only)
-- `POST /profiles`, `GET /profiles`, `POST /profiles/{name}/vault`
+- `POST /profiles`, `GET /profiles`
+- `GET /vault` (names, sites, field names), `PUT /vault/{name}`, `DELETE /vault/{name}`, plus the `/vault` page
 - `GET /live/{task_id}` page and `WS /live/{task_id}/stream`
 - Auth: API key in header. Each key has a name, used as agent id in the audit log.
 
@@ -133,8 +140,8 @@ A web page served by the runtime that shows the browser as it moves and lets you
 
 Each phase ends with something runnable and tested.
 
-1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the six tools, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
-2. **Vault + scrubbing + audit.** Test: fill a password from vault, assert it is absent from snapshot, audit row and screenshot.
+1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the tools in 4.3, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
+2. **Vault + scrubbing + audit.** Vault page and REST. Test: add an email and password on the vault page, agent logs in to a test site with them, assert neither value appears in snapshot, audit row, screenshot or any agent response. Test: `fill` on a page from a different site errors.
 3. **Live view.** Stream, input, take control and hand back. Test: open `live_url`, log in to a test site by hand, hand back, agent continues logged in.
 4. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
 5. **Approval gate.** Test: a "Place order" click stops at `waiting_approval` and runs only after approve.
