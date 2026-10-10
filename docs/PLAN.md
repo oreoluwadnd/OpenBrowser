@@ -39,14 +39,14 @@ One process, one machine (local-first). Multi-tenant comes later (phase 5).
                    |                    |
         Task queue (per profile, FIFO)  Tool layer (one implementation of each action)
                    |                    |
-               Worker loop ------------>+
-                   |                    |
               Profile manager  (one Chromium process per profile, owns leases)
                    |
            Vault  |  Audit log  |  Approval gate
 ```
 
-Rule: every browser action goes through the tool layer, whether it comes from MCP or from the built-in worker. One code path, so audit, approval and scrubbing cannot be skipped.
+No model inside the runtime. The brain is whatever agent connects (Claude, an OpenAI agent, a script). It reads snapshots and calls tools; the runtime only runs the browser.
+
+Rule: every browser action goes through the tool layer, from MCP or REST. One code path, so audit, approval and scrubbing cannot be skipped.
 
 ## 4. Components
 
@@ -55,15 +55,19 @@ Rule: every browser action goes through the tool layer, whether it comes from MC
 - A profile is a name plus a folder: `data/profiles/<name>/`.
 - Opening a profile launches `launch_persistent_context(folder)`. The context stays open while the runtime runs (E5: only one process can hold it anyway).
 - **Session cookies (E4):** on close and every 60s while open, save `context.cookies()` that have no expiry to `data/profiles/<name>/session_cookies.json` (encrypted with the vault key). On open, add them back with `context.add_cookies`. This is the one mechanism for "stay logged in".
-- Lease: a profile is held by at most one task or one MCP session at a time. Lease has an owner id and is released on task end or MCP disconnect. Asking for a held profile returns an error naming the holder. No waiting, no stealing.
+- Lease: a profile is held by at most one task at a time. The lease is the task (4.2).
 
-### 4.2 Task queue
+### 4.2 Tasks
 
-- Per profile FIFO, stored in SQLite.
-- States: `queued -> running -> (waiting_approval -> running)* -> done | failed | closed`.
-- The head of a profile's queue gets the lease when it's free.
+A task is an agent's turn on a profile, with a goal written down for the audit log.
 
-### 4.3 Tool layer (shared by MCP and the worker)
+- `spawn_task(profile, goal)` puts the task in that profile's FIFO queue (SQLite) and returns its id and state.
+- The head of the queue is `running` and holds the profile. Tool calls must pass the task id. A call on a task that is not `running` returns an error with its queue position.
+- `steer_task(id, message)`: a human adds a note. It is returned with the agent's next tool result.
+- `close_task(id)` ends it and hands the profile to the next task. An MCP disconnect closes the session's open tasks.
+- States: `queued -> running -> (waiting_approval -> running)* -> closed`.
+
+### 4.3 Tool layer (shared by MCP and REST)
 
 | Tool | Input | Output |
 |------|-------|--------|
@@ -76,18 +80,9 @@ Rule: every browser action goes through the tool layer, whether it comes from MC
 
 Every action returns the next snapshot, so verify is built in. Each call writes one audit row before returning.
 
-### 4.4 Worker loop (built-in brain for `spawn_task`)
+### 4.4 The agent loop lives in the agent
 
-```
-loop until done/failed/step limit:
-  perceive: snapshot (screenshot only if the model asks for one)
-  reason:   send goal + history + snapshot to the model, get one tool call or "done"/"fail"
-  act:      run the tool through the tool layer
-  verify:   the returned snapshot goes into the next turn; model judges progress
-  steer:    if steer_task added a message, add it to the next turn
-```
-
-Step limit per task (default 50). Hitting it = `failed` with reason.
+The connected agent runs perceive (`snapshot`, `screenshot` when needed), reason (its own model), act (a tool), verify (the snapshot each tool returns). The runtime adds nothing to this loop, so any agent works the same way.
 
 ### 4.5 Vault (fill-only)
 
@@ -98,9 +93,9 @@ Step limit per task (default 50). Hitting it = `failed` with reason.
 
 ### 4.6 Approval gate
 
-- Before `click` or `press Enter`, the tool layer asks the model (built-in worker) or the caller (MCP) to label the action: `reversible` or `irreversible`. Plus a fixed rule: any click whose element name matches a configurable word list (buy, pay, submit, delete, send, confirm, place order) is irreversible regardless of label.
-- Irreversible = task moves to `waiting_approval`; the action runs only after `POST /tasks/{id}/approve`. Rejected = the model is told and continues.
-- For MCP clients: the tool returns `approval_required` with an approval id; the client calls `approve` on behalf of its human.
+- `click` and `press` take a required `irreversible: bool` set by the agent. Plus a fixed rule: any click whose element name matches a configurable word list (buy, pay, submit, delete, send, confirm, place order) is irreversible whatever the agent says.
+- Irreversible = the tool returns `approval_required` and the task moves to `waiting_approval`. The action runs only after a human calls `POST /tasks/{id}/approve`. Rejected = the agent is told on its next call.
+- Approve and reject are REST only, never MCP tools, so the agent cannot approve itself.
 
 ### 4.7 Audit log
 
@@ -110,35 +105,30 @@ One SQLite row per action: time, agent id (API key name or MCP client name), tas
 
 ### REST (high level)
 
-- `POST /tasks` (`spawn_task`): profile, goal, optional step limit. Returns task id.
-- `POST /tasks/{id}/steer` (`steer_task`): message.
-- `GET /tasks` (`list_tasks`): filter by profile and state.
-- `POST /tasks/{id}/close` (`close_task`): stops it, releases lease.
-- `POST /tasks/{id}/approve` and `/reject`
+- `POST /tasks` (`spawn_task`), `POST /tasks/{id}/steer` (`steer_task`), `GET /tasks` (`list_tasks`), `POST /tasks/{id}/close` (`close_task`)
+- `POST /tasks/{id}/actions/{tool}`: the tools in 4.3, for agents that speak HTTP instead of MCP
+- `POST /tasks/{id}/approve` and `/reject` (human only)
 - `POST /profiles`, `GET /profiles`, `POST /profiles/{name}/vault`
 - Auth: API key in header. Each key has a name, used as agent id in the audit log.
 
 ### MCP (low level)
 
-- `open_profile(name)` takes the lease for this session, then the tools in 4.3, then `close_profile`.
-- The REST task tools are also exposed over MCP so an MCP-only agent can hand off whole tasks.
+- `spawn_task`, `steer_task`, `list_tasks`, `close_task`, plus the tools in 4.3.
+- Connect from Claude (Desktop, Code) or any MCP client and it drives the browser.
 
 ## 6. Build phases
 
 Each phase ends with something runnable and tested.
 
-1. **Profiles + tool layer + MCP.** Persistent profiles with session-cookie restore, the six tools, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two MCP clients on one profile, second gets the lease error.
+1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the six tools, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
 2. **Vault + scrubbing + audit.** Test: fill a password from vault, assert it is absent from snapshot, audit row and screenshot.
-3. **Task queue + worker loop + REST.** Test: FIFO order per profile; spawn a task against a local test site and reach done.
+3. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
 4. **Approval gate.** Test: a "Place order" click stops at `waiting_approval` and runs only after approve.
-5. **Multi-tenant hosting.** Tenant id on every table, per-tenant profile folders, quotas (profiles, concurrent tasks, steps per day), one OS user or container per tenant for isolation.
-
-Phases 1 and 2 already deliver the core promise for any external agent. The built-in worker is phase 3.
+5. **Multi-tenant hosting.** Tenant id on every table, per-tenant profile folders, quotas (profiles, concurrent tasks, actions per day), one OS user or container per tenant for isolation.
 
 ## 7. Decisions needed from you
 
-1. **Model for the built-in worker.** Proposal: one provider in v1 (Anthropic API), model set by env var. Other providers later only if asked for.
-2. **Headless or headed by default.** Proposal: headed for local use (you can watch and log in by hand), headless for hosted.
-3. **First login.** Proposal: you log in by hand in the headed window once (`abb login <profile>`), not through the agent.
-4. **Approval word list.** Is the list in 4.6 the right starting set?
-5. **Name.** Repo is `OpenBrowser`, description says "Agent Browser Bridge". Which one goes on the package and CLI?
+1. **Headless or headed by default.** Proposal: headed for local use (you can watch and log in by hand), headless for hosted.
+2. **First login.** Proposal: you log in by hand in the headed window once (`abb login <profile>`), not through the agent.
+3. **Approval word list.** Is the list in 4.6 the right starting set?
+4. **Name.** Repo is `OpenBrowser`, description says "Agent Browser Bridge". Which one goes on the package and CLI?
