@@ -14,6 +14,14 @@ LOGIN_PAGE = b"""<!doctype html><title>Login</title>
 </form>"""
 
 
+CHECKOUT_PAGE = b"""<!doctype html><title>Checkout</title>
+<button onclick="document.getElementById('out').textContent='Order placed'">Place order</button>
+<button onclick="document.getElementById('out').textContent='Coupon applied'">Apply coupon</button>
+<form onsubmit="document.getElementById('out').textContent='Message sent'; return false">
+<input aria-label="Message"><button>Send message</button></form>
+<p id=out></p>"""
+
+
 class Site:
     def __init__(self):
         sessions: dict[str, str] = {}
@@ -33,6 +41,8 @@ class Site:
             def do_GET(self):
                 if self.path == "/login":
                     return self._html(LOGIN_PAGE)
+                if self.path == "/checkout":
+                    return self._html(CHECKOUT_PAGE)
                 if self.path == "/me":
                     cookies = dict(
                         c.strip().split("=", 1) for c in self.headers.get("Cookie", "").split(";") if "=" in c
@@ -61,6 +71,6 @@ class Site:
 
 def ref(snapshot: str, role: str, name: str) -> str:
     """The ref of the element with this role and name in a snapshot."""
-    match = re.search(rf'{role} "{re.escape(name)}".*?\[ref=(e\d+)\]', snapshot)
+    match = re.search(rf'{role} "{re.escape(name)}".*?\[ref=([a-z0-9]+)\]', snapshot)
     assert match, f"No {role} {name!r} in snapshot:\n{snapshot}"
     return match.group(1)

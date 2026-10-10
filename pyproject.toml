@@ -7,13 +7,18 @@ dependencies = [
     "playwright>=1.63",
     "mcp>=2.3",
     "cryptography>=50",
+    "fastapi>=0.143.0",
+    "websockets>=17.2",
 ]
 
 [project.scripts]
 openbrowser = "openbrowser.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pillow>=12.3.0",
+    "pytest>=8",
+]
 
 [build-system]
 requires = ["hatchling"]

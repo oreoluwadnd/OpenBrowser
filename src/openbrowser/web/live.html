@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenBrowser live view</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f5; color: #18181b; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px; flex-wrap: wrap; }
+  #status { flex: 1; min-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { padding: 6px 12px; border: 1px solid #a1a1aa; border-radius: 6px; background: #fff; cursor: pointer; }
+  button[hidden] { display: none; }
+  #approval { display: none; background: #fef3c7; border: 1px solid #f59e0b; padding: 8px; margin: 0 8px 8px; border-radius: 6px; }
+  #approval.show { display: block; }
+  #screen { display: block; width: calc(100% - 16px); margin: 0 8px 8px; background: #fff; outline: none; border-radius: 4px; }
+  #screen.driving { outline: 3px solid #2563eb; }
+  @media (prefers-color-scheme: dark) { body { background: #18181b; color: #f4f4f5; } button { background: #27272a; color: #f4f4f5; } #approval { color: #18181b; } }
+</style></head>
+<body>
+<header>
+  <span id="status">Connecting…</span>
+  <button id="take">Take control</button>
+  <button id="back" hidden>Hand back</button>
+</header>
+<div id="approval">
+  <div>The agent wants to: <b id="what"></b></div>
+  <p><button id="approve">Approve</button> <button id="reject">Reject</button></p>
+</div>
+<canvas id="screen" tabindex="0" width="1280" height="720"></canvas>
+<script>/*BRIDGE*/</script>
+<script>
+const $ = (id) => document.getElementById(id);
+const canvas = $("screen"), ctx = canvas.getContext("2d");
+let ws, state = "", approvalId = null, size = { width: 1280, height: 720 };
+
+function connect(origin, taskId, token) {
+  const wsOrigin = origin.replace(/^http/, "ws");
+  ws = new WebSocket(`${wsOrigin}/live/${taskId}/ws?token=${encodeURIComponent(token)}`);
+  ws.onmessage = (event) => {
+    const m = JSON.parse(event.data);
+    if (m.type === "frame") draw(m);
+    else if (m.type === "state") showState(m);
+    else if (m.type === "error") $("status").textContent = m.message;
+  };
+  ws.onclose = () => { $("status").textContent = state === "closed" ? "Task closed." : "Disconnected."; };
+}
+
+function draw(m) {
+  size = { width: m.width, height: m.height };
+  const img = new Image();
+  img.onload = () => {
+    if (canvas.width !== img.width || canvas.height !== img.height) { canvas.width = img.width; canvas.height = img.height; }
+    ctx.drawImage(img, 0, 0);
+  };
+  img.src = "data:image/jpeg;base64," + m.data;
+}
+
+function showState(m) {
+  state = m.state;
+  const labels = { running: "Agent is driving", queued: "Waiting in queue", waiting_approval: "Waiting for your approval",
+                   human_control: "You are driving", closed: "Task closed" };
+  $("status").textContent = `${labels[m.state] || m.state} · ${m.url || ""}`;
+  $("take").hidden = m.state !== "running";
+  $("back").hidden = m.state !== "human_control";
+  canvas.classList.toggle("driving", m.state === "human_control");
+  approvalId = m.approval ? m.approval.id : null;
+  $("approval").classList.toggle("show", !!m.approval);
+  $("what").textContent = m.approval ? m.approval.description : "";
+}
+
+const send = (m) => ws && ws.readyState === 1 && ws.send(JSON.stringify(m));
+const point = (e) => ({ x: (e.offsetX / canvas.clientWidth) * size.width, y: (e.offsetY / canvas.clientHeight) * size.height });
+$("take").onclick = () => { send({ type: "take_control" }); canvas.focus(); };
+$("back").onclick = () => send({ type: "hand_back" });
+$("approve").onclick = () => send({ type: "approve", id: approvalId });
+$("reject").onclick = () => send({ type: "reject", id: approvalId });
+canvas.addEventListener("click", (e) => { canvas.focus(); send({ type: "mouse", action: "click", ...point(e) }); });
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); send({ type: "mouse", action: "wheel", ...point(e), dy: e.deltaY }); }, { passive: false });
+canvas.addEventListener("keydown", (e) => {
+  if (state !== "human_control") return;
+  e.preventDefault();
+  const mods = ["Control", "Alt", "Meta"].filter((k) => e.getModifierState(k));
+  if (e.key.length > 1 && e.shiftKey) mods.push("Shift");
+  if (["Control", "Alt", "Meta", "Shift"].includes(e.key)) return;
+  send({ type: "key", key: e.key, mods });
+});
+
+if (bridge.inApp && !location.search.includes("token=")) {
+  // In the chat: the live view URL arrives in the tool result.
+  bridge.on("ui/notifications/tool-result", (result) => {
+    const match = bridge.text(result).match(/(https?:\/\/[^\s/]+)\/live\/(\w+)\?token=([\w-]+)/);
+    if (match) connect(match[1], match[2], match[3]);
+    else $("status").textContent = bridge.text(result) || "No live view in this result.";
+  });
+  bridge.start();
+} else {
+  const taskId = location.pathname.split("/")[2];
+  connect(location.origin, taskId, new URLSearchParams(location.search).get("token"));
+}
+</script>
+</body></html>

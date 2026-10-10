@@ -8,17 +8,17 @@ pytestmark = pytest.mark.anyio
 
 async def log_in(rt: Runtime, site_url: str) -> str:
     task = rt.tasks.spawn("main", "log in")
-    snap = await rt.tools.navigate(task.id, f"{site_url}/login")
-    await rt.tools.fill(task.id, ref(snap, "textbox", "Email"), "ada@example.com")
-    await rt.tools.fill(task.id, ref(snap, "textbox", "Password"), "pw")
-    snap = await rt.tools.click(task.id, ref(snap, "button", "Sign in"))
+    snap = await rt.tools.navigate("test", task.id, f"{site_url}/login")
+    await rt.tools.fill("test", task.id, ref(snap, "textbox", "Email"), "ada@example.com", None)
+    await rt.tools.fill("test", task.id, ref(snap, "textbox", "Password"), "pw", None)
+    snap = await rt.tools.click("test", task.id, ref(snap, "button", "Sign in"), irreversible=False)
     assert "Signed in as ada@example.com" in snap
     return task.id
 
 
 async def whoami(rt: Runtime, site_url: str) -> str:
     task = rt.tasks.spawn("main", "check login")
-    return await rt.tools.navigate(task.id, f"{site_url}/me")
+    return await rt.tools.navigate("test", task.id, f"{site_url}/me")
 
 
 async def test_still_logged_in_after_restart(config, site):
@@ -50,4 +50,4 @@ async def test_parallel_first_calls_open_the_profile_once(config, site):
 
     async with Runtime(config) as rt:
         task = rt.tasks.spawn("main", "x")
-        await asyncio.gather(rt.tools.snapshot(task.id), rt.tools.snapshot(task.id))
+        await asyncio.gather(rt.tools.snapshot("test", task.id), rt.tools.snapshot("test", task.id))
