@@ -3,6 +3,7 @@ from playwright.async_api import Locator, Page
 
 from openbrowser.errors import OpenBrowserError
 from openbrowser.profiles import ProfileManager
+from openbrowser.snapshot import compact
 from openbrowser.tasks import TaskStore
 
 ACTION_TIMEOUT_MS = 10_000
@@ -58,7 +59,7 @@ class Tools:
         return await self._observe(task_id, page)
 
     async def _observe(self, task_id: str, page: Page) -> str:
-        tree = await _run(page.aria_snapshot(mode="ai"))
+        tree = compact(await _run(page.aria_snapshot(mode="ai")))
         parts = [f"URL: {page.url}", f"Title: {await page.title()}", "", tree]
         notes = self._tasks.take_notes(task_id)
         if notes:
