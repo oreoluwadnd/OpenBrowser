@@ -16,6 +16,7 @@ Each design choice below rests on a test run against Playwright 1.63 (Python) an
 | E4 | Close and reopen a persistent profile | Cookies with an expiry and `localStorage` survive. **Cookies without an expiry (session cookies) are lost.** | Many sites log in with session cookies. A plain persistent profile does NOT keep you logged in across restarts. See 4.1. |
 | E5 | Open the same profile folder twice at once | Chromium refuses: "Failed to create a ProcessSingleton" | One profile = one browser process. Leasing is enforced by Chromium itself; the runtime must own that one process. |
 | E6 | Fill a password field, then snapshot | **The password appears in plain text** (`textbox "Pass": hunter2`) | Filling from the vault is not enough. Snapshots must be scrubbed. See 4.5. |
+| E7 | Hidden (headless) browser: CDP `Page.startScreencast`, then send clicks and text with `Input.dispatchMouseEvent` / `Input.insertText` | Real JPEG frames stream out (about 4 KB each); the human's typing and click landed on the page | A live view works without a visible window, so local and hosted run the same way. See 4.8. |
 
 ## 2. Stack
 
@@ -53,7 +54,7 @@ Rule: every browser action goes through the tool layer, from MCP or REST. One co
 ### 4.1 Profile manager
 
 - A profile is a name plus a folder: `data/profiles/<name>/`.
-- Opening a profile launches `launch_persistent_context(folder)`. The context stays open while the runtime runs (E5: only one process can hold it anyway).
+- Opening a profile launches `launch_persistent_context(folder, headless=True)`. Always hidden; you watch it through the live view (4.8). The context stays open while the runtime runs (E5: only one process can hold it anyway).
 - **Session cookies (E4):** on close and every 60s while open, save `context.cookies()` that have no expiry to `data/profiles/<name>/session_cookies.json` (encrypted with the vault key). On open, add them back with `context.add_cookies`. This is the one mechanism for "stay logged in".
 - Lease: a profile is held by at most one task at a time. The lease is the task (4.2).
 
@@ -65,7 +66,7 @@ A task is an agent's turn on a profile, with a goal written down for the audit l
 - The head of the queue is `running` and holds the profile. Tool calls must pass the task id. A call on a task that is not `running` returns an error with its queue position.
 - `steer_task(id, message)`: a human adds a note. It is returned with the agent's next tool result.
 - `close_task(id)` ends it and hands the profile to the next task. An MCP disconnect closes the session's open tasks.
-- States: `queued -> running -> (waiting_approval -> running)* -> closed`.
+- States: `queued -> running -> (waiting_approval | human_control -> running)* -> closed`.
 
 ### 4.3 Tool layer (shared by MCP and REST)
 
@@ -101,6 +102,17 @@ The connected agent runs perceive (`snapshot`, `screenshot` when needed), reason
 
 One SQLite row per action: time, agent id (API key name or MCP client name), task id, profile, tool, input (scrubbed), result summary, approval id if any. Append-only. `GET /audit?profile=&task=`.
 
+### 4.8 Live view
+
+A web page served by the runtime that shows the browser as it moves and lets you use it.
+
+- Frames come from CDP `Page.startScreencast` on the active tab and go to the page over a WebSocket (E7). Streaming only runs while someone is watching.
+- Your mouse and keyboard go back through CDP `Input.*` events (E7).
+- `spawn_task` returns `live_url` (`/live/<task_id>?token=...`, token valid for that task only). The agent shows it to you in Claude or wherever you use it; you open it in any browser, local or hosted.
+- **Take control** button: task moves to `human_control`, agent tool calls return "human has control" until you press **Hand back**. One driver at a time.
+- First login uses this: spawn a task, open the live view, log in yourself, hand back.
+- The live view shows the real screen, including any secret the page displays. It is for the profile owner only.
+
 ## 5. Interfaces
 
 ### REST (high level)
@@ -109,6 +121,7 @@ One SQLite row per action: time, agent id (API key name or MCP client name), tas
 - `POST /tasks/{id}/actions/{tool}`: the tools in 4.3, for agents that speak HTTP instead of MCP
 - `POST /tasks/{id}/approve` and `/reject` (human only)
 - `POST /profiles`, `GET /profiles`, `POST /profiles/{name}/vault`
+- `GET /live/{task_id}` page and `WS /live/{task_id}/stream`
 - Auth: API key in header. Each key has a name, used as agent id in the audit log.
 
 ### MCP (low level)
@@ -122,13 +135,12 @@ Each phase ends with something runnable and tested.
 
 1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the six tools, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
 2. **Vault + scrubbing + audit.** Test: fill a password from vault, assert it is absent from snapshot, audit row and screenshot.
-3. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
-4. **Approval gate.** Test: a "Place order" click stops at `waiting_approval` and runs only after approve.
-5. **Multi-tenant hosting.** Tenant id on every table, per-tenant profile folders, quotas (profiles, concurrent tasks, actions per day), one OS user or container per tenant for isolation.
+3. **Live view.** Stream, input, take control and hand back. Test: open `live_url`, log in to a test site by hand, hand back, agent continues logged in.
+4. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
+5. **Approval gate.** Test: a "Place order" click stops at `waiting_approval` and runs only after approve.
+6. **Multi-tenant hosting.** Tenant id on every table, per-tenant profile folders, quotas (profiles, concurrent tasks, actions per day), one OS user or container per tenant for isolation.
 
 ## 7. Decisions needed from you
 
-1. **Headless or headed by default.** Proposal: headed for local use (you can watch and log in by hand), headless for hosted.
-2. **First login.** Proposal: you log in by hand in the headed window once (`abb login <profile>`), not through the agent.
-3. **Approval word list.** Is the list in 4.6 the right starting set?
-4. **Name.** Repo is `OpenBrowser`, description says "Agent Browser Bridge". Which one goes on the package and CLI?
+1. **Approval word list.** Is the list in 4.6 the right starting set?
+2. **Name.** Repo is `OpenBrowser`, description says "Agent Browser Bridge". Which one goes on the package and CLI?
