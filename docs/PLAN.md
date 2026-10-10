@@ -1,4 +1,4 @@
-# Agent Browser Bridge: Architecture and Build Plan
+# OpenBrowser: Architecture and Build Plan
 
 Status: draft for review. No code yet.
 
@@ -26,7 +26,7 @@ Each design choice below rests on a test run against Playwright 1.63 (Python) an
 - MCP Python SDK (`mcp` 2.3.0) for the MCP server
 - FastAPI for REST, which also generates the OpenAPI spec
 - SQLite for tasks, leases, audit log, vault
-- `cryptography` (Fernet) for vault encryption, key from `ABB_VAULT_KEY` env var. Missing key = startup error.
+- `cryptography` (Fernet) for vault encryption, key from `OPENBROWSER_VAULT_KEY` env var. Missing key = startup error.
 
 ## 3. Shape of the system
 
@@ -155,5 +155,6 @@ Each phase ends with something runnable and tested.
 
 ## 7. Decisions needed from you
 
+Name: OpenBrowser (package `openbrowser`, CLI `openbrowser`, env vars `OPENBROWSER_*`).
+
 1. **Approval word list.** Is the list in 4.6 the right starting set?
-2. **Name.** Repo is `OpenBrowser`, description says "Agent Browser Bridge". Which one goes on the package and CLI?
