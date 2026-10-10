@@ -17,7 +17,7 @@ Each design choice below rests on a test run against Playwright 1.63 (Python) an
 | E5 | Open the same profile folder twice at once | Chromium refuses: "Failed to create a ProcessSingleton" | One profile = one browser process. Leasing is enforced by Chromium itself; the runtime must own that one process. |
 | E6 | Fill a password field, then snapshot | **The password appears in plain text** (`textbox "Pass": hunter2`) | Filling from the vault is not enough. Snapshots must be scrubbed. See 4.5. |
 | E7 | Hidden (headless) browser: CDP `Page.startScreencast`, then send clicks and text with `Input.dispatchMouseEvent` / `Input.insertText` | Real JPEG frames stream out (about 4 KB each); the human's typing and click landed on the page | A live view works without a visible window, so local and hosted run the same way. See 4.8. |
-| E8 | Read `mcp` 2.3.0 source (`mcp/server/apps.py`, `mcp/server/elicitation.py`) | SDK supports MCP Apps: a tool can show an HTML form inside the chat, and tools can be marked `visibility=["app"]` so only that form can call them, not the model. SDK docs say form-mode elicitation must not be used for passwords. | Vault form lives in the chat as an MCP App. See 4.5. |
+| E8 | Read `mcp` 2.3.0 source (`mcp/server/apps.py`, `mcp/server/elicitation.py`) | SDK supports MCP Apps: a tool can show an HTML form inside the chat, and tools can be marked `visibility=["app"]` so only that form can call them, not the model. SDK docs say form-mode elicitation must not be used for passwords. A form can declare `csp.connect_domains` to open connections to the runtime. | Vault form and live view live in the chat as MCP Apps. See 4.5, 4.8. |
 
 ## 2. Stack
 
@@ -113,11 +113,14 @@ One SQLite row per action: time, agent id (API key name or MCP client name), tas
 
 ### 4.8 Live view
 
-A web page served by the runtime that shows the browser as it moves and lets you use it.
+Shows the browser as it moves, inside the chat, and lets you use it.
 
-- Frames come from CDP `Page.startScreencast` on the active tab and go to the page over a WebSocket (E7). Streaming only runs while someone is watching.
-- Your mouse and keyboard go back through CDP `Input.*` events (E7).
-- `spawn_task` returns `live_url` (`/live/<task_id>?token=...`, token valid for that task only). The agent shows it to you in Claude or wherever you use it; you open it in any browser, local or hosted.
+- **In the chat (E8):** `spawn_task` is an MCP App tool. When the agent starts a task, the live view appears in the chat. You can also ask "show me the browser" and the agent calls `live_view(task_id)`.
+- **Same page outside the chat:** the same HTML is served at `live_url` (`/live/<task_id>?token=...`) for clients that can't show apps, like a terminal. One page, two places to open it.
+- **Frames:** CDP `Page.startScreencast` on the active tab (E7), sent to the page over a WebSocket straight from the runtime. The in-chat page is allowed to connect via `csp.connect_domains`. Frames do not go through the model, so they don't fill the chat's memory. Streaming only runs while someone is watching.
+- **Input:** your mouse and keyboard go back over the same WebSocket and into CDP `Input.*` events (E7).
+- **Token:** the WebSocket needs a token valid for that task only.
+- **Not verified yet:** whether a page inside claude.ai is allowed to connect to a runtime on your own machine (`localhost`). Browsers can block a website from talking to local addresses. A hosted runtime on a public address has no such issue. Phase 3 tests this first.
 - **Take control** button: task moves to `human_control`, agent tool calls return "human has control" until you press **Hand back**. One driver at a time.
 - First login uses this: spawn a task, open the live view, log in yourself, hand back.
 - The live view shows the real screen, including any secret the page displays. It is for the profile owner only.
@@ -145,7 +148,7 @@ Each phase ends with something runnable and tested.
 
 1. **Profiles + tasks + tool layer + MCP.** Persistent profiles with session-cookie restore, per-profile FIFO tasks, the tools in 4.3, MCP server. Test: log in to a test site, restart runtime, still logged in. Test: two tasks on one profile, second waits its turn. Test: Claude connected over MCP completes a task on a local test site.
 2. **Vault + scrubbing + audit.** Vault form in the chat and REST. Test: in Claude, save an email and password in the chat form, then ask Claude what the password is and check the conversation export: it must not be there. Test: agent logs in to a test site with them, assert neither value appears in snapshot, audit row, screenshot or any agent response. Test: `fill` on a page from a different site errors.
-3. **Live view.** Stream, input, take control and hand back. Test: open `live_url`, log in to a test site by hand, hand back, agent continues logged in.
+3. **Live view.** Stream, input, take control and hand back, in the chat and at `live_url`. First test: from Claude, can the in-chat page connect to a runtime on `localhost`? The result decides how local users connect. Test: in the chat, log in to a test site by hand, hand back, agent continues logged in.
 4. **REST.** Same tasks and tools over HTTP. Test: a plain script completes the same task as phase 1.
 5. **Approval gate.** Test: a "Place order" click stops at `waiting_approval` and runs only after approve.
 6. **Multi-tenant hosting.** Tenant id on every table, per-tenant profile folders, quotas (profiles, concurrent tasks, actions per day), one OS user or container per tenant for isolation.
