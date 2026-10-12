@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -12,7 +13,7 @@ PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class ProfileManager:
-    """One persistent Chromium context per profile, kept open while the runtime runs.
+    """One persistent Chromium context per open profile. Idle profiles are closed and reopen on demand.
 
     Chromium drops cookies without an expiry when a profile closes, so they are
     saved encrypted next to the profile and added back on open.
@@ -63,6 +64,19 @@ class ProfileManager:
         context = self._contexts[name]
         session_cookies = [c for c in await context.cookies() if c["expires"] == -1]
         self._cookies_file(name).write_bytes(self._fernet.encrypt(json.dumps(session_cookies).encode()))
+
+    def open_names(self) -> list[str]:
+        return list(self._contexts)
+
+    async def close_if_idle(self, name: str, is_idle: Callable[[], bool]) -> bool:
+        """Close a profile's browser if `is_idle()` still holds once no one can be opening it.
+        Logins survive: session cookies are saved first, everything else is on disk."""
+        async with self._open_lock:
+            if name not in self._contexts or not is_idle():
+                return False
+            await self.save_session_cookies(name)
+            await self._contexts.pop(name).close()
+            return True
 
     async def save_all(self) -> None:
         for name in list(self._contexts):

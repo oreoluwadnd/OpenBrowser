@@ -32,6 +32,7 @@ Keep both keys. The vault key encrypts saved logins; losing it means saving them
 | `OPENBROWSER_PUBLIC_URL` | `http://127.0.0.1:8931` | The address clients use. Requests for any other host are refused |
 | `OPENBROWSER_DATA_DIR` | `data` | Profiles and database |
 | `OPENBROWSER_CHROMIUM` | Playwright's Chromium | Path to a Chromium binary |
+| `OPENBROWSER_BROWSER_IDLE_SECONDS` | 120 | Close a profile's browser after this long with no open task. Logins are kept; reopening takes about 0.3 s |
 | `OPENBROWSER_MAX_PROFILES` | 20 | |
 | `OPENBROWSER_MAX_OPEN_TASKS` | 50 | |
 | `OPENBROWSER_MAX_ACTIONS_PER_DAY` | 5000 | |

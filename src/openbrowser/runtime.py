@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import AsyncExitStack
 
 from cryptography.fernet import Fernet
@@ -34,6 +35,7 @@ class Runtime:
         self.approvals = ApprovalStore(self.db)
         self.profiles: ProfileManager
         self.tools: Tools
+        self._idle_since: dict[str, float] = {}
         self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> "Runtime":
@@ -51,13 +53,31 @@ class Runtime:
         await self._stack.aclose()
         self.db.close()
 
+    async def close_idle_browsers(self, now: float) -> list[str]:
+        """Close browsers of profiles that have had no open task for `browser_idle_seconds`."""
+        closed = []
+        for name in self.profiles.open_names():
+            if self.tasks.open_tasks(name):
+                self._idle_since.pop(name, None)
+                continue
+            since = self._idle_since.setdefault(name, now)
+            if now - since >= self.config.browser_idle_seconds:
+                # Re-checked under the profile lock: a task may have been spawned meanwhile.
+                if await self.profiles.close_if_idle(name, lambda name=name: not self.tasks.open_tasks(name)):
+                    closed.append(name)
+                self._idle_since.pop(name, None)
+        return closed
+
     async def _housekeeping(self) -> None:
         while True:
-            await asyncio.sleep(self.config.cookie_save_seconds)
+            await asyncio.sleep(self.config.housekeeping_seconds)
             await self.profiles.save_all()
-            closed = self.tasks.close_idle(self.config.task_idle_seconds)
-            if closed:
-                log.info("Closed idle tasks: %s", closed)
+            closed_tasks = self.tasks.close_idle(self.config.task_idle_seconds)
+            if closed_tasks:
+                log.info("Closed idle tasks: %s", closed_tasks)
+            closed_browsers = await self.close_idle_browsers(time.monotonic())
+            if closed_browsers:
+                log.info("Closed idle browsers: %s", closed_browsers)
 
 
 def _log_crash(task: asyncio.Task) -> None:

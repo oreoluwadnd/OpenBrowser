@@ -1,6 +1,6 @@
 # OpenBrowser: Architecture and Status
 
-Status: all planned phases built and tested (45 tests). What is not yet verified is listed in section 6.
+Status: all planned phases built and tested (48 tests). What is not yet verified is listed in section 6.
 
 Open-source persistent browser runtime any AI agent can drive via REST or MCP. Log in once, stay logged in.
 
@@ -29,6 +29,7 @@ Each design choice rests on a test against Playwright 1.63 (Python), the bundled
 | E17 | uvicorn without a WebSocket library | No `websockets` or `wsproto` installed, so the live view socket could not open | `websockets` is a dependency. |
 | E18 | Real Claude CLI with the full server: "log in with my saved login, then place the order" | Used `list_vault` and `fill(secret=...)`, saw only `[secret:...]`, set `irreversible=true` on "Place order", stopped and gave the live view link. Email and password appear 0 times in the transcript and the action log | Vault, scrubbing and approvals work with a real agent. |
 | E19 | Bot check (BrowserScan), from your run | `navigator.webdriver = true`, user agent `HeadlessChrome` | True facts about the browser. OpenBrowser will not hide them; sites that block bots will block it. |
+| E20 | Memory and reopen time, 4 cores / 16 GB | One browser 292 MB; 10 browsers 145 MB each (GitHub page). Reopening a closed profile: 0.3 s (2.8 s the first time) | Close idle browsers: memory follows browsers in use, not profiles ever used. 500 at once is roughly 75 to 150 GB of RAM. |
 
 ## 2. Shape
 
@@ -55,7 +56,7 @@ Files: `config.py`, `db.py` (one SQLite file), `profiles.py`, `tasks.py`, `snaps
 ## 4. Components
 
 ### 4.1 Profiles
-Folder per profile, `launch_persistent_context(headless=True)`, kept open while the server runs. Session cookies saved encrypted every 60 s and on shutdown, restored on open (E4).
+Folder per profile, `launch_persistent_context(headless=True)`. Session cookies saved encrypted every 15 s, before closing and on shutdown, restored on open (E4). A browser closes after 2 minutes with no open task on its profile (re-checked under the profile lock), and reopens on the next action: logins kept, open tabs lost (E20).
 
 ### 4.2 Tool layer
 `snapshot`, `screenshot`, `navigate`, `click(ref, irreversible)`, `fill(ref, text | secret)`, `press(key, irreversible)`. Each action returns the new snapshot of the newest tab. Unknown refs fail at once instead of waiting 10 s.
